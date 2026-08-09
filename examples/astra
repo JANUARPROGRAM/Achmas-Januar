@@ -1,0 +1,11 @@
+#!/bin/bash
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -z "$1" ]; then
+    echo "AstraLang"
+    echo "Usage: astra <file.as>"
+    exit 1
+fi
+
+python3 "$DIR/runtime.py" "$1"
