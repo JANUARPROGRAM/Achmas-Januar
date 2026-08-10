@@ -1,6 +1,6 @@
 """
-AstraLang Lexer (v0.1)
-======================
+AstraLang Lexer (v0.1, diperluas di v.0.30 di updatw  v0.40)
+============================================
 Bertugas membaca source code AstraLang (.as) dan mengubahnya
 menjadi deretan token yang akan diproses oleh Parser.
 
@@ -11,7 +11,7 @@ Desain:
 """
 
 # ---------------------------------------------------------------------------
-# Tipe-tipe token yang dikenali di v0.1
+# Tipe-tipe token yang dikenali
 # ---------------------------------------------------------------------------
 TOKEN_TYPES = (
     "NUMBER", "STRING", "IDENT",
@@ -23,6 +23,10 @@ TOKEN_TYPES = (
     "LPAREN", "RPAREN", "LBRACE", "RBRACE",
     "COMMA", "SEMI",
     "NEWLINE", "EOF",
+    # -- Ditambahkan v0.40: Type System (List & null) --
+    "LBRACKET", "RBRACKET", "NULL",
+    # -- Ditambahkan v0.40 lanjutan: Custom Type --
+    "TYPE", "DOT", "COLON",
 )
 
 KEYWORDS = {
@@ -38,6 +42,10 @@ KEYWORDS = {
     "and": "AND",
     "or": "OR",
     "not": "NOT",
+    # -- Ditambahkan v0.3: Type System --
+    "null": "NULL",
+    # -- Ditambahkan v0.3 lanjutan: Custom Type --
+    "type": "TYPE",
 }
 
 
@@ -215,6 +223,8 @@ class Lexer:
             "(": "LPAREN", ")": "RPAREN",
             "{": "LBRACE", "}": "RBRACE",
             ",": "COMMA", ";": "SEMI",
+            "[": "LBRACKET", "]": "RBRACKET",  # v0.3: List literal & indexing
+            ".": "DOT", ":": "COLON",           # v0.3: Custom Type (field access & literal)
         }
         if ch in single_map:
             return Token(single_map[ch], ch, start_line, start_col)

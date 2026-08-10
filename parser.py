@@ -13,11 +13,21 @@ from lexer import Lexer
 
 
 class ParserError(Exception):
-    def __init__(self, message, line, column):
+    """
+    Error struktur kode di tahap parsing.
+    v0.3: menambahkan field `hint` opsional berisi saran perbaikan konkret,
+    supaya error message tidak cuma bilang "salah" tapi juga "coba begini".
+    """
+
+    def __init__(self, message, line, column, hint=None):
         self.message = message
         self.line = line
         self.column = column
-        super().__init__(f"[Parser Error] Baris {line}, Kolom {column}: {message}")
+        self.hint = hint
+        text = f"[Parser Error] Baris {line}, Kolom {column}: {message}"
+        if hint:
+            text += f"\n  Saran: {hint}"
+        super().__init__(text)
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +132,65 @@ class CallExpr(Node):
         self.line = line
 
 
+# -- Ditambahkan v0.3: Type System (List) ---------------------------------
+class ListExpr(Node):
+    """Literal list, mis. [1, 2, 3]"""
+    def __init__(self, elements, line):
+        self.elements = elements  # list of Node
+        self.line = line
+
+
+class IndexExpr(Node):
+    """Akses elemen list dengan index, mis. daftar[0]"""
+    def __init__(self, collection, index, line):
+        self.collection = collection  # Node (biasanya VarExpr atau ListExpr)
+        self.index = index            # Node (ekspresi index)
+        self.line = line
+
+
+class IndexAssignExpr(Node):
+    """Assignment ke elemen list, mis. daftar[0] = 99"""
+    def __init__(self, collection, index, value, line):
+        self.collection = collection
+        self.index = index
+        self.value = value
+        self.line = line
+
+
+# -- Ditambahkan v0.3 lanjutan: Custom Type -------------------------------
+class TypeDecl(Node):
+    """Deklarasi custom type, mis. type Point { x y }"""
+    def __init__(self, name, fields, line):
+        self.name = name      # nama type, mis. 'Point'
+        self.fields = fields  # list of field name (string)
+        self.line = line
+
+
+class InstanceExpr(Node):
+    """Literal instance dari custom type, mis. Point { x: 10, y: 20 }"""
+    def __init__(self, type_name, field_values, line):
+        self.type_name = type_name        # nama type, mis. 'Point'
+        self.field_values = field_values  # list of (field_name, Node)
+        self.line = line
+
+
+class FieldAccessExpr(Node):
+    """Akses field instance, mis. p.x"""
+    def __init__(self, obj, field_name, line):
+        self.obj = obj              # Node (biasanya VarExpr)
+        self.field_name = field_name
+        self.line = line
+
+
+class FieldAssignExpr(Node):
+    """Assignment ke field instance, mis. p.x = 99"""
+    def __init__(self, obj, field_name, value, line):
+        self.obj = obj
+        self.field_name = field_name
+        self.value = value
+        self.line = line
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -129,6 +198,12 @@ class Parser:
     def __init__(self, tokens):
         self.tokens = tokens
         self.pos = 0
+        # v0.3 lanjutan: saat True, `Nama { ... }` di posisi ekspresi primer
+        # boleh diartikan sebagai instance literal. Dimatikan sementara waktu
+        # parsing kondisi if/while, supaya `if Aktif { ... }` (Aktif = variabel
+        # boolean berhuruf besar) tidak salah diartikan sebagai instance
+        # literal yang menelan blok if itu sendiri.
+        self._allow_instance_literal = True
 
     # -- helper dasar ---------------------------------------------------
     def _peek(self, offset=0):
@@ -154,11 +229,11 @@ class Parser:
             return self._advance()
         return None
 
-    def _expect(self, type_, message):
+    def _expect(self, type_, message, hint=None):
         if self._check(type_):
             return self._advance()
         tok = self._current()
-        raise ParserError(message, tok.line, tok.column)
+        raise ParserError(message, tok.line, tok.column, hint=hint)
 
     def _skip_newlines(self):
         while self._check("NEWLINE") or self._check("SEMI"):
@@ -167,7 +242,7 @@ class Parser:
     # -- entry point ------------------------------------------------------
     def parse(self):
         statements = []
-        self._skip_newlines()
+        self._skip_newlines()y
         while not self._check("EOF"):
             statements.append(self._statement())
             self._skip_newlines()
@@ -189,6 +264,8 @@ class Parser:
             return self._function_decl()
         if tok.type == "RETURN":
             return self._return_statement()
+        if tok.type == "TYPE":
+            return self._type_decl()
 
         return self._expression_statement()
 
@@ -220,7 +297,9 @@ class Parser:
     def _if_statement(self):
         line = self._current().line
         self._advance()  # 'if'
+        self._allow_instance_literal = False
         condition = self._expression()
+        self._allow_instance_literal = True
         then_branch = self._block()
         else_branch = None
         self._skip_newlines_peek_else()
@@ -243,7 +322,9 @@ class Parser:
     def _while_statement(self):
         line = self._current().line
         self._advance()  # 'while'
+        self._allow_instance_literal = False
         condition = self._expression()
+        self._allow_instance_literal = True
         body = self._block()
         return WhileStatement(condition, body, line)
 
@@ -274,6 +355,33 @@ class Parser:
         expr = self._expression()
         return ExpressionStatement(expr, line)
 
+    # -- Ditambahkan v0.3 lanjutan: Custom Type -----------------------------
+    def _type_decl(self):
+        line = self._current().line
+        self._advance()  # 'type'
+        name_tok = self._expect("IDENT", "Diharapkan nama type setelah 'type'")
+        self._expect(
+            "LBRACE", f"Diharapkan '{{' setelah nama type '{name_tok.value}'",
+            hint=f"Contoh: type {name_tok.value} {{ x y }}",
+        )
+        self._skip_newlines()
+        fields = []
+        while not self._check("RBRACE") and not self._check("EOF"):
+            field_tok = self._expect(
+                "IDENT", "Diharapkan nama field di dalam deklarasi type",
+                hint="Setiap baris di dalam 'type { }' berisi satu nama field, mis. x",
+            )
+            fields.append(field_tok.value)
+            self._skip_newlines()
+        self._expect("RBRACE", f"Diharapkan '}}' untuk menutup deklarasi type '{name_tok.value}'")
+        if not fields:
+            raise ParserError(
+                f"Type '{name_tok.value}' tidak punya field sama sekali",
+                line, self._current().column,
+                hint="Tambahkan minimal satu field, mis. type Point { x y }",
+            )
+        return TypeDecl(name_tok.value, fields, line)
+
     # -- expressions (precedence climbing) ---------------------------------
     def _expression(self):
         return self._assignment()
@@ -286,7 +394,17 @@ class Parser:
             value = self._assignment()
             if isinstance(expr, VarExpr):
                 return AssignExpr(expr.name, value, line)
-            raise ParserError("Target assignment tidak valid", line, self._current().column)
+            if isinstance(expr, IndexExpr):
+                # v0.3: daftar[0] = 99
+                return IndexAssignExpr(expr.collection, expr.index, value, line)
+            if isinstance(expr, FieldAccessExpr):
+                # v0.3 lanjutan: p.x = 99
+                return FieldAssignExpr(expr.obj, expr.field_name, value, line)
+            raise ParserError(
+                "Target assignment tidak valid",
+                line, self._current().column,
+                hint="Assignment hanya bisa ke variabel (x = 5), elemen list (daftar[0] = 5), atau field instance (p.x = 5)",
+            )
         return expr
 
     def _logic_or(self):
@@ -325,6 +443,12 @@ class Parser:
         expr = self._factor()
         while self._current().type in ("PLUS", "MINUS"):
             op = self._advance()
+            # v0.4: izinkan baris baru setelah operator +/- supaya ekspresi
+            # panjang (mis. penggabungan string HTML) bisa ditulis multi-baris:
+            #   let html = "<a>" +
+            #       "<b>" +
+            #       "<c>"
+            self._skip_newlines()
             right = self._factor()
             expr = BinaryExpr(expr, op.value, right, op.line)
         return expr
@@ -357,9 +481,66 @@ class Parser:
                         args.append(self._expression())
                 self._expect("RPAREN", "Diharapkan ')' setelah argumen fungsi")
                 expr = CallExpr(expr, args, line)
+            elif self._check("LBRACKET"):
+                # v0.3: indexing, mis. daftar[0], matrix[0][1]
+                line = self._current().line
+                self._advance()  # '['
+                index_expr = self._expression()
+                self._expect(
+                    "RBRACKET",
+                    "Diharapkan ']' untuk menutup indexing",
+                )
+                expr = IndexExpr(expr, index_expr, line)
+            elif self._check("DOT"):
+                # v0.3 lanjutan: field access, mis. p.x
+                line = self._current().line
+                self._advance()  # '.'
+                field_tok = self._expect(
+                    "IDENT", "Diharapkan nama field setelah '.'",
+                    hint="Contoh: p.x untuk mengakses field 'x' pada instance p",
+                )
+                expr = FieldAccessExpr(expr, field_tok.value, line)
+            elif self._check("LBRACE") and self._allow_instance_literal \
+                    and isinstance(expr, VarExpr) and expr.name[:1].isupper():
+                # v0.3 lanjutan: instance literal, mis. Point { x: 10, y: 20 }
+                # Hanya dipicu kalau nama diawali huruf besar (konvensi nama Type)
+                # supaya tidak bentrok dengan blok lain yang kebetulan muncul
+                # setelah sebuah identifier di posisi ekspresi.
+                expr = self._instance_literal(expr.name, expr.line)
             else:
                 break
         return expr
+
+    def _instance_literal(self, type_name, line):
+        self._advance()  # '{'
+        self._skip_newlines()
+        field_values = []
+        if not self._check("RBRACE"):
+            field_values.append(self._instance_field())
+            while self._match("COMMA"):
+                self._skip_newlines()
+                if self._check("RBRACE"):
+                    break
+                field_values.append(self._instance_field())
+            self._skip_newlines()
+        self._expect(
+            "RBRACE", f"Diharapkan '}}' untuk menutup instance '{type_name}'",
+            hint=f"Contoh: {type_name} {{ field: nilai }}",
+        )
+        return InstanceExpr(type_name, field_values, line)
+
+    def _instance_field(self):
+        self._skip_newlines()
+        field_tok = self._expect(
+            "IDENT", "Diharapkan nama field di dalam instance literal",
+            hint="Contoh: x: 10",
+        )
+        self._expect(
+            "COLON", f"Diharapkan ':' setelah nama field '{field_tok.value}'",
+            hint=f"Contoh: {field_tok.value}: nilai",
+        )
+        value = self._expression()
+        return (field_tok.value, value)
 
     def _primary(self):
         tok = self._current()
@@ -376,6 +557,10 @@ class Parser:
         if tok.type == "FALSE":
             self._advance()
             return LiteralExpr(False, tok.line)
+        if tok.type == "NULL":
+            # v0.3: null sebagai literal eksplisit
+            self._advance()
+            return LiteralExpr(None, tok.line)
         if tok.type == "IDENT":
             self._advance()
             return VarExpr(tok.value, tok.line)
@@ -384,11 +569,52 @@ class Parser:
             expr = self._expression()
             self._expect("RPAREN", "Diharapkan ')' untuk menutup ekspresi")
             return expr
+        if tok.type == "LBRACKET":
+            # v0.3: literal list, mis. [1, 2, 3]
+            # v0.3 lanjutan: mendukung penulisan multi-baris, mis.
+            #   [
+            #       1,
+            #       2,
+            #   ]
+            self._advance()
+            self._skip_newlines()
+            elements = []
+            if not self._check("RBRACKET"):
+                elements.append(self._expression())
+                self._skip_newlines()
+                while self._match("COMMA"):
+                    self._skip_newlines()
+                    # Izinkan trailing comma, mis. [1, 2, 3,]
+                    if self._check("RBRACKET"):
+                        break
+                    elements.append(self._expression())
+                    self._skip_newlines()
+            self._expect(
+                "RBRACKET",
+                "Diharapkan ']' untuk menutup literal list",
+                hint="Pastikan setiap '[' punya pasangan ']', mis. [1, 2, 3]",
+            )
+            return ListExpr(elements, tok.line)
 
         raise ParserError(
             f"Token tidak terduga: {tok.type} ({tok.value!r})",
             tok.line, tok.column,
+            hint=self._suggest_hint_for_unexpected_token(tok),
         )
+
+    def _suggest_hint_for_unexpected_token(self, tok):
+        """v0.3: memberi saran perbaikan kontekstual untuk error token tak terduga."""
+        if tok.type == "RBRACE":
+            return "Ada '}' berlebih, atau blok sebelumnya belum dibuka dengan '{'"
+        if tok.type == "RPAREN":
+            return "Ada ')' berlebih, atau kurung buka '(' belum ditulis"
+        if tok.type == "RBRACKET":
+            return "Ada ']' berlebih, atau list belum dibuka dengan '['"
+        if tok.type == "EOF":
+            return "Kode berakhir tiba-tiba, kemungkinan ada blok/kurung yang belum ditutup"
+        if tok.type == "ASSIGN":
+            return "Tanda '=' di sini tidak terduga, cek apakah ada nilai yang hilang sebelumnya"
+        return None
 
 
 def parse_source(source: str):
